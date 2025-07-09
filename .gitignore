@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.env
+*.venv
+venv/
+env/
+
+# Data files - these can be large and should be regenerated
+*.csv
+*.json.gz
+*.json
+
+# OS-specific
+.DS_Store
+
+# Ignore streamlit credential files
+.streamlit/credentials.toml
+.streamlit/config.toml 
