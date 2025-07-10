@@ -298,6 +298,28 @@ def main():
         index=0
     )
     
+    # Collection Name filter
+    if 'customerCollection_name' in df.columns:
+        collection_names = ['All'] + sorted(df['customerCollection_name'].fillna('N/A').unique().tolist())
+        selected_collection_name = st.sidebar.selectbox(
+            "Collection Name",
+            collection_names,
+            index=0
+        )
+    else:
+        selected_collection_name = 'All'
+    
+    # SiteHierarchy Priority filter
+    if 'siteHierarchy_priority' in df.columns:
+        priorities = ['All'] + sorted(df['siteHierarchy_priority'].fillna('N/A').unique().tolist())
+        selected_priority = st.sidebar.selectbox(
+            "SiteHierarchy Priority",
+            priorities,
+            index=0
+        )
+    else:
+        selected_priority = 'All'
+    
     # Date filter
     if 'timeBox_startTime_date' in df.columns:
         dates = ['All'] + sorted(df['timeBox_startTime_date'].unique().tolist())
@@ -323,6 +345,12 @@ def main():
     
     if selected_customer != 'All':
         filtered_df = filtered_df[filtered_df['customerCollection_customer'] == selected_customer]
+    
+    if selected_collection_name != 'All' and 'customerCollection_name' in filtered_df.columns:
+        filtered_df = filtered_df[filtered_df['customerCollection_name'].fillna('N/A') == selected_collection_name]
+    
+    if selected_priority != 'All' and 'siteHierarchy_priority' in filtered_df.columns:
+        filtered_df = filtered_df[filtered_df['siteHierarchy_priority'].fillna('N/A') == selected_priority]
     
     if selected_date != 'All':
         filtered_df = filtered_df[filtered_df['timeBox_startTime_date'] == selected_date]
