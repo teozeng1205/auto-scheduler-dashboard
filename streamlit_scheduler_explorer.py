@@ -160,7 +160,7 @@ def create_interactive_gantt_chart(intensity_matrix, provider_site_customers, df
     fig = go.Figure(data=go.Heatmap(
         z=log_intensity,
         x=hours,
-        y=provider_site_customers,
+        y=provider_site_customers[::-1],  # Reverse the order of the y-axis
         colorscale='Reds',
         hoverongaps=False,
         hovertemplate='<b>%{y}</b><br>' +
