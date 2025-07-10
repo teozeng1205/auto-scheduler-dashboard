@@ -74,7 +74,9 @@ Ensure you have the required data file:
 The application works with grouped data containing:
 - **506 unique configurations** (compressed from 10M+ original records)
 - **31 columns** including:
-  - Time windows (`timeBox_startTime_time`, `timeBox_endTime_time`)
+  - **Top-level time windows** (`timeBox_startTime_time`, `timeBox_endTime_time`, `timeBox_startTime_date`, `timeBox_endTime_date`) - Overall scheduling window for the entire record
+  - **Owner-specific time windows** (`owner_timeBox_startTime_time`, `owner_timeBox_endTime_time`, `owner_timeBox_startTime_date`, `owner_timeBox_endTime_date`) - Specific scheduling windows for individual request owners
+  - **Owner sequence** (`ownerSequence`) - Identifies multiple owners within a single record (1-6 owners possible)
   - Provider information (`provider`, `site`)
   - Customer data (`customerCollection_customer`)
   - Scheduling metadata

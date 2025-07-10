@@ -497,6 +497,42 @@ def main():
                             ]
                         })
                         st.dataframe(duration_stats, use_container_width=True, hide_index=True)
+            
+            # Owner timeBox analysis
+            if 'owner_timeBox_startTime_time' in filtered_df.columns:
+                st.subheader("Owner-Specific Time Analysis")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    # Owner sequence distribution
+                    if 'ownerSequence' in filtered_df.columns:
+                        owner_dist = filtered_df.groupby('ownerSequence')['row_count'].sum().sort_index()
+                        st.write("**Distribution by Owner Sequence:**")
+                        owner_dist_df = owner_dist.to_frame('Total Records')
+                        owner_dist_df['Percentage'] = (owner_dist_df['Total Records'] / owner_dist_df['Total Records'].sum() * 100).round(1)
+                        st.dataframe(owner_dist_df, use_container_width=True)
+                
+                with col2:
+                    # Compare main vs owner time windows
+                    time_comparison = []
+                    for _, row in filtered_df.iterrows():
+                        if (pd.notna(row['timeBox_startTime_time']) and pd.notna(row['owner_timeBox_startTime_time']) and
+                            pd.notna(row['timeBox_endTime_time']) and pd.notna(row['owner_timeBox_endTime_time'])):
+                            main_start = time_to_decimal_hour(row['timeBox_startTime_time'])
+                            owner_start = time_to_decimal_hour(row['owner_timeBox_startTime_time'])
+                            if main_start is not None and owner_start is not None:
+                                time_comparison.append({
+                                    'Same Start Time': main_start == owner_start,
+                                    'Records': row['row_count']
+                                })
+                    
+                    if time_comparison:
+                        comp_df = pd.DataFrame(time_comparison)
+                        comp_summary = comp_df.groupby('Same Start Time')['Records'].sum()
+                        st.write("**Main vs Owner Time Window Comparison:**")
+                        comp_display = comp_summary.to_frame('Total Records')
+                        comp_display['Percentage'] = (comp_display['Total Records'] / comp_display['Total Records'].sum() * 100).round(1)
+                        st.dataframe(comp_display, use_container_width=True)
         else:
             st.warning("No data matches the selected filters.")
     
@@ -591,7 +627,8 @@ def main():
             # Default columns to show
             default_cols = [
                 'collection_frequency', 'provider', 'site', 'customerCollection_customer',
-                'timeBox_startTime_time', 'timeBox_endTime_time', 'row_count'
+                'timeBox_startTime_time', 'timeBox_endTime_time', 'ownerSequence',
+                'owner_timeBox_startTime_time', 'owner_timeBox_endTime_time', 'row_count'
             ]
             
             available_cols = filtered_df.columns.tolist()

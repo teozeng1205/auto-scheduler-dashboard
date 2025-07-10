@@ -94,16 +94,16 @@ def flatten_record(record, collection_frequency=None, hourly_collection_plan_id=
             # inputRequest: no columns (just track existence)
             flattened['inputRequest_exists'] = 1 if 'inputRequest' in owner else 0
             
-            # timebox: all columns (without suffix)
+            # owner timeBox: all columns (with owner prefix to distinguish from top-level timeBox)
             if 'timeBox' in owner:
                 tb = owner['timeBox']
                 for key, value in tb.items():
                     if isinstance(value, dict):
                         # Handle nested time objects
                         for subkey, subvalue in value.items():
-                            flattened[f'timebox_{key}_{subkey}'] = subvalue
+                            flattened[f'owner_timeBox_{key}_{subkey}'] = subvalue
                     else:
-                        flattened[f'timebox_{key}'] = value
+                        flattened[f'owner_timeBox_{key}'] = value
             
             result_rows.append(flattened)
     else:
