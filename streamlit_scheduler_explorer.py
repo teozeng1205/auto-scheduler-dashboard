@@ -333,15 +333,15 @@ def main():
     with col1:
         st.metric(
             "Total Configurations",
-            f"{len(filtered_df):,}",
-            delta=f"{len(filtered_df) - len(df):,} from total"
+            "{:,}".format(len(filtered_df)),
+            delta="{:,}".format(len(filtered_df) - len(df)) + " from total"
         )
     
     with col2:
         total_records = filtered_df['row_count'].sum()
         st.metric(
             "Total Records",
-            f"{total_records:,}",
+            "{:,}".format(total_records),
             delta=f"{(total_records/df['row_count'].sum()*100-100):.1f}%" if len(df) > 0 else "0%"
         )
     
@@ -349,21 +349,21 @@ def main():
         unique_providers = filtered_df['provider'].nunique()
         st.metric(
             "Unique Providers",
-            f"{unique_providers:,}"
+            "{:,}".format(unique_providers)
         )
     
     with col4:
         unique_sites = filtered_df['site'].nunique()
         st.metric(
             "Unique Sites",
-            f"{unique_sites:,}"
+            "{:,}".format(unique_sites)
         )
     
     with col5:
         unique_customers = filtered_df['customerCollection_customer'].nunique()
         st.metric(
             "Unique Customers",
-            f"{unique_customers:,}"
+            "{:,}".format(unique_customers)
         )
     
     st.markdown("---")
@@ -384,11 +384,16 @@ def main():
                     'row_count': ['sum', 'count', 'mean']
                 }).round(1)
                 freq_summary.columns = ['Total Records', 'Configurations', 'Avg Records/Config']
+                # Format numbers with commas
+                freq_summary['Total Records'] = freq_summary['Total Records'].apply(lambda x: "{:,}".format(x))
+                freq_summary['Configurations'] = freq_summary['Configurations'].apply(lambda x: "{:,}".format(x))
                 st.dataframe(freq_summary, use_container_width=True)
             
             with col2:
                 st.subheader("Top Sites")
                 provider_summary = filtered_df.groupby('site')['row_count'].sum().sort_values(ascending=False).head(5)
+                # Format numbers with commas
+                provider_summary = provider_summary.apply(lambda x: "{:,}".format(x))
                 st.dataframe(provider_summary.to_frame('Total Records'), use_container_width=True)
             
             # Time analysis if available
@@ -401,6 +406,9 @@ def main():
                 filtered_df_temp['end_time_formatted'] = filtered_df_temp['timeBox_endTime_time'].apply(convert_time_to_hour_minute)
                 
                 time_summary = filtered_df_temp.groupby('start_time_formatted')['row_count'].sum().sort_values(ascending=False).head(10)
+                
+                # Format the time summary with thousand separators
+                time_summary = time_summary.apply(lambda x: "{:,}".format(x))
                 
                 col1, col2 = st.columns(2)
                 with col1:
@@ -425,13 +433,12 @@ def main():
                         duration_stats = pd.DataFrame({
                             'Statistic': ['Average', 'Median', 'Min', 'Max'],
                             'Hours': [
-                                np.mean(durations),
-                                np.median(durations),
-                                np.min(durations),
-                                np.max(durations)
+                                "{:.2f}".format(np.mean(durations)),
+                                "{:.2f}".format(np.median(durations)),
+                                "{:.2f}".format(np.min(durations)),
+                                "{:.2f}".format(np.max(durations))
                             ]
                         })
-                        duration_stats['Hours'] = duration_stats['Hours'].round(2)
                         st.dataframe(duration_stats, use_container_width=True, hide_index=True)
         else:
             st.warning("No data matches the selected filters.")
@@ -515,7 +522,9 @@ def main():
                                 })
                         
                         if top_combinations:
-                            st.dataframe(pd.DataFrame(top_combinations), use_container_width=True, hide_index=True)
+                            top_combinations_df = pd.DataFrame(top_combinations)
+                            top_combinations_df['Total Records'] = top_combinations_df['Total Records'].apply(lambda x: "{:,}".format(x))
+                            st.dataframe(top_combinations_df, use_container_width=True, hide_index=True)
                     else:
                         st.error("Could not create Gantt chart")
                 else:
@@ -558,6 +567,11 @@ def main():
                 for col in selected_cols:
                     if 'time' in col.lower() and col.endswith('_time'):
                         display_df[col] = display_df[col].apply(convert_time_to_hour_minute)
+                
+                # Format numeric columns with commas
+                for col in selected_cols:
+                    if pd.api.types.is_numeric_dtype(display_df[col]):
+                        display_df[col] = display_df[col].apply(lambda x: "{:,}".format(x) if pd.notna(x) else x)
                 
                 st.dataframe(display_df, use_container_width=True, hide_index=True)
                 
