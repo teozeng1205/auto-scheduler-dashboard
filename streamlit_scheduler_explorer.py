@@ -73,104 +73,134 @@ def time_to_decimal_hour(time_val):
     minutes = time_int % 100
     return hours + minutes / 60.0
 
-def create_gantt_chart_data(df, target_date=None):
-    """Create data structure for Gantt chart visualization"""
-    
-    # Handle date filtering
-    if target_date is None and 'timeBox_startTime_date' in df.columns:
-        # Use the most common date
-        target_date = df['timeBox_startTime_date'].mode().iloc[0] if len(df['timeBox_startTime_date'].mode()) > 0 else df['timeBox_startTime_date'].iloc[0]
-    
-    if target_date and 'timeBox_startTime_date' in df.columns:
-        df_filtered = df[df['timeBox_startTime_date'] == target_date].copy()
-    else:
-        df_filtered = df.copy()
-    
-    if len(df_filtered) == 0:
-        return None, None, None
-    
-    # Create provider|site|customer combinations
+def create_gantt_chart_data(df):
+    """Create intensity matrix and labels for multi-day Gantt chart.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Filtered dataframe containing at least the following columns:
+        - provider, site, customerCollection_customer
+        - timeBox_startTime_date, timeBox_startTime_time, timeBox_endTime_time
+        - hourly_collection_plan_id, row_count
+
+    Returns
+    -------
+    intensity_matrix : np.ndarray | None
+        Matrix of shape (n_provider_site_customer, n_dates*24) with record counts.
+    provider_site_customers : list[str] | None
+        Ordered list of provider|site|customer identifiers.
+    x_date_labels : list[str] | None
+        Repeated date labels for multi-category x-axis.
+    x_hour_labels : list[str] | None
+        Repeated hour labels ("HH:00") for multi-category x-axis.
+    """
+
+    # Ensure required columns are present
+    required_cols = {
+        'provider', 'site', 'customerCollection_customer',
+        'timeBox_startTime_date', 'timeBox_startTime_time', 'timeBox_endTime_time',
+        'hourly_collection_plan_id', 'row_count'
+    }
+    if not required_cols.issubset(set(df.columns)):
+        return None, None, None, None
+
+    df_filtered = df.copy()
+
+    # Combine provider, site, customer for Y-axis
     df_filtered['provider_site_customer'] = (
-        df_filtered['provider'].astype(str) + '|' + 
-        df_filtered['site'].fillna('N/A').astype(str) + '|' + 
+        df_filtered['provider'].astype(str) + '|' +
+        df_filtered['site'].fillna('N/A').astype(str) + '|' +
         df_filtered['customerCollection_customer'].fillna('N/A').astype(str)
     )
-    
-    # Convert time values to decimal hours
-    start_time_col = 'timeBox_startTime_time'
-    end_time_col = 'timeBox_endTime_time'
-    
-    if start_time_col in df_filtered.columns and end_time_col in df_filtered.columns:
-        df_filtered['start_decimal'] = df_filtered[start_time_col].apply(time_to_decimal_hour)
-        df_filtered['end_decimal'] = df_filtered[end_time_col].apply(time_to_decimal_hour)
-        
-        # Handle day rollover
-        df_filtered['end_decimal_adjusted'] = df_filtered.apply(lambda row: 
-            row['end_decimal'] + 24 if row['end_decimal'] < row['start_decimal'] else row['end_decimal'], 
-            axis=1)
-        
-        # Order provider_site_customer combinations by hourly_collection_plan_id
-        provider_ordering = df_filtered.groupby('provider_site_customer')['hourly_collection_plan_id'].first().sort_values()
-        provider_site_customers = provider_ordering.index.tolist()
-        
-        hours = list(range(24))
-        
-        # Initialize matrix
-        intensity_matrix = np.zeros((len(provider_site_customers), 24))
-        
-        # Fill matrix with scheduling data
-        for idx, (_, row) in enumerate(df_filtered.iterrows()):
-            if pd.notna(row['start_decimal']) and pd.notna(row['end_decimal_adjusted']):
-                provider_idx = provider_site_customers.index(row['provider_site_customer'])
-                start_hour = int(row['start_decimal'])
-                end_hour = int(row['end_decimal_adjusted'])
-                
-                # Mark hours with intensity
-                for hour in range(start_hour, min(end_hour + 1, 24)):
-                    intensity_matrix[provider_idx, hour] += row['row_count']
-                
-                # Handle rollover to next day
-                if end_hour >= 24:
-                    for hour in range(0, end_hour - 24 + 1):
-                        intensity_matrix[provider_idx, hour] += row['row_count']
-        
-        return intensity_matrix, provider_site_customers, df_filtered
-    
-    return None, None, None
 
-def create_interactive_gantt_chart(intensity_matrix, provider_site_customers, df_filtered):
-    """Create interactive Gantt chart with intensity using Plotly"""
-    
+    # Helper conversion
+    df_filtered['start_decimal'] = df_filtered['timeBox_startTime_time'].apply(time_to_decimal_hour)
+    df_filtered['end_decimal'] = df_filtered['timeBox_endTime_time'].apply(time_to_decimal_hour)
+
+    # If time conversion failed, drop those rows
+    df_filtered = df_filtered[pd.notna(df_filtered['start_decimal']) & pd.notna(df_filtered['end_decimal'])]
+    if df_filtered.empty:
+        return None, None, None, None
+
+    # Adjust for windows that roll over midnight
+    df_filtered['end_decimal_adjusted'] = df_filtered.apply(
+        lambda r: r['end_decimal'] + 24 if r['end_decimal'] < r['start_decimal'] else r['end_decimal'], axis=1
+    )
+
+    # Unique dates sorted
+    dates = sorted(df_filtered['timeBox_startTime_date'].dropna().unique().tolist())
+    n_dates = len(dates)
+    if n_dates == 0:
+        return None, None, None, None
+    date_to_idx = {d: i for i, d in enumerate(dates)}
+
+    # Provider ordering for stable Y-axis
+    provider_ordering = df_filtered.groupby('provider_site_customer')['hourly_collection_plan_id'].first().sort_values()
+    provider_site_customers = provider_ordering.index.tolist()
+
+    # Initialize intensity matrix
+    intensity_matrix = np.zeros((len(provider_site_customers), n_dates * 24))
+
+    # Populate matrix
+    for _, row in df_filtered.iterrows():
+        provider_idx = provider_site_customers.index(row['provider_site_customer'])
+        date_idx = date_to_idx.get(row['timeBox_startTime_date'])
+        if date_idx is None:
+            continue
+
+        start_hr = int(row['start_decimal'])
+        end_hr = int(row['end_decimal_adjusted'])
+
+        for hr in range(start_hr, end_hr + 1):
+            target_date_idx = date_idx
+            hour_within_day = hr
+            if hr >= 24:
+                target_date_idx += hr // 24
+                hour_within_day = hr % 24
+            if target_date_idx >= n_dates:
+                break  # Skip overflow beyond available dates
+            col_idx = target_date_idx * 24 + hour_within_day
+            intensity_matrix[provider_idx, col_idx] += row['row_count']
+
+    # Build multi-category labels
+    x_date_labels = []
+    x_hour_labels = []
+    for d in dates:
+        for hr in range(24):
+            x_date_labels.append(str(d))
+            x_hour_labels.append(f"{hr:02d}:00")
+
+    return intensity_matrix, provider_site_customers, x_date_labels, x_hour_labels
+
+def create_interactive_gantt_chart(intensity_matrix, provider_site_customers, x_date_labels, x_hour_labels):
+    """Create interactive multi-day Gantt chart with intensity using Plotly"""
     if intensity_matrix is None or len(provider_site_customers) == 0:
         st.warning("No data available for Gantt chart visualization")
         return None
-    
-    # Create heatmap data
-    hours = [f'{h:02d}:00' for h in range(24)]
-    
-    # Use log scale for better visualization
-    log_intensity = np.log1p(intensity_matrix)
-    
-    # Pre-format the raw record counts for the hover tooltip
-    hover_text = []
-    for row in intensity_matrix:
-        hover_text.append([f'{val:,.0f}' for val in row])
 
-    # Create the heatmap
+    # Multi-category X-axis (date, hour)
+    x_multi = [x_date_labels, x_hour_labels]
+
+    # Log scale for intensity
+    log_intensity = np.log1p(intensity_matrix)
+
+    hover_text = [[f"{val:,.0f}" for val in row] for row in intensity_matrix]
+
     fig = go.Figure(data=go.Heatmap(
         z=log_intensity,
-        x=hours,
-        y=provider_site_customers[::-1],  # Reverse the order of the y-axis
+        x=x_multi,
+        y=provider_site_customers[::-1],  # Reverse Y-axis order for readability
         colorscale='Reds',
         hoverongaps=False,
         hovertemplate='<b>%{y}</b><br>' +
-                     'Hour: %{x}<br>' +
-                     'Log(Records + 1): %{z:.2f}<br>' +
-                     'Raw Records: %{customdata}<extra></extra>',
-        customdata=hover_text,  # Use pre-formatted text
+                      'Date / Hour: %{x}<br>' +
+                      'Log(Records + 1): %{z:.2f}<br>' +
+                      'Raw Records: %{customdata}<extra></extra>',
+        customdata=hover_text,
         showscale=True
     ))
-    
+
     fig.update_layout(
         title={
             'text': f'Scheduling Intensity Heatmap - {len(provider_site_customers)} Provider|Site|Customer Combinations',
@@ -178,17 +208,16 @@ def create_interactive_gantt_chart(intensity_matrix, provider_site_customers, df
             'xanchor': 'center',
             'font': {'size': 18, 'family': 'Arial, sans-serif'}
         },
-        xaxis_title='Hour of Day',
+        xaxis_title='Date / Hour',
         yaxis_title='Provider | Site | Customer',
         height=max(400, len(provider_site_customers) * 25),
         font=dict(size=12),
         margin=dict(l=300, r=50, t=80, b=50)
     )
-    
-    # Update axes
-    fig.update_xaxes(tickangle=45)
+
+    fig.update_xaxes(type='multicategory', tickangle=45)
     fig.update_yaxes(tickfont=dict(size=10))
-    
+
     return fig
 
 def create_summary_charts(df):
@@ -496,27 +525,15 @@ def main():
         st.header("Gantt Chart - Scheduling Intensity")
         
         if len(filtered_df) > 0:
-            # Date selection for Gantt chart
+            # Date selection for Gantt chart (removed to allow multi-day view)
             gantt_date = None
-            if 'timeBox_startTime_date' in filtered_df.columns:
-                available_dates = sorted(filtered_df['timeBox_startTime_date'].unique())
-                if len(available_dates) > 1:
-                    gantt_date = st.selectbox(
-                        "Select Date for Gantt Chart",
-                        available_dates,
-                        index=0
-                    )
-                else:
-                    gantt_date = available_dates[0] if available_dates else None
-                    if gantt_date:
-                        st.info(f"Showing data for date: {gantt_date}")
-            
+
             with st.spinner("Creating Gantt chart..."):
-                intensity_matrix, provider_site_customers, gantt_df = create_gantt_chart_data(filtered_df, gantt_date)
+                intensity_matrix, provider_site_customers, x_date_labels, x_hour_labels = create_gantt_chart_data(filtered_df)
                 
                 if intensity_matrix is not None:
                     # Create and display the interactive Gantt chart
-                    fig = create_interactive_gantt_chart(intensity_matrix, provider_site_customers, gantt_df)
+                    fig = create_interactive_gantt_chart(intensity_matrix, provider_site_customers, x_date_labels, x_hour_labels)
                     
                     if fig is not None:
                         st.plotly_chart(fig, use_container_width=True)
@@ -526,11 +543,15 @@ def main():
                         
                         with col1:
                             active_hours = np.sum(intensity_matrix.sum(axis=0) > 0)
-                            st.metric("Active Hours", f"{active_hours}/24")
+                            total_hours = intensity_matrix.shape[1]
+                            st.metric("Active Hours", f"{active_hours}/{total_hours}")
                         
                         with col2:
-                            peak_hour = np.argmax(intensity_matrix.sum(axis=0))
-                            st.metric("Peak Hour", f"{peak_hour:02d}:00")
+                            peak_hour_idx = np.argmax(intensity_matrix.sum(axis=0))
+                            day_of_peak = peak_hour_idx // 24
+                            hour_of_peak = peak_hour_idx % 24
+                            peak_label = f"{x_date_labels[peak_hour_idx]} {hour_of_peak:02d}:00"
+                            st.metric("Peak Hour", peak_label)
                         
                         with col3:
                             total_combinations = len(provider_site_customers)
