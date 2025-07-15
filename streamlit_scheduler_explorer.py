@@ -349,6 +349,17 @@ def main():
     else:
         selected_priority = 'All'
     
+    # Customer Site Code filter
+    if 'siteHierarchy_customerSiteCode' in df.columns:
+        customer_site_codes = ['All'] + sorted(df['siteHierarchy_customerSiteCode'].fillna('N/A').unique().tolist())
+        selected_customer_site_code = st.sidebar.selectbox(
+            "Customer Site Code",
+            customer_site_codes,
+            index=0
+        )
+    else:
+        selected_customer_site_code = 'All'
+    
     # Date filter
     if 'timeBox_startTime_date' in df.columns:
         dates = ['All'] + sorted(df['timeBox_startTime_date'].unique().tolist())
@@ -380,6 +391,9 @@ def main():
     
     if selected_priority != 'All' and 'siteHierarchy_priority' in filtered_df.columns:
         filtered_df = filtered_df[filtered_df['siteHierarchy_priority'].fillna('N/A') == selected_priority]
+    
+    if selected_customer_site_code != 'All' and 'siteHierarchy_customerSiteCode' in filtered_df.columns:
+        filtered_df = filtered_df[filtered_df['siteHierarchy_customerSiteCode'].fillna('N/A') == selected_customer_site_code]
     
     if selected_date != 'All':
         filtered_df = filtered_df[filtered_df['timeBox_startTime_date'] == selected_date]
@@ -426,7 +440,7 @@ def main():
     st.markdown("---")
     
     # Main content tabs
-    tab1, tab2, tab3, tab4 = st.tabs(["📊 Data Overview", "📈 Summary Charts", "📅 Gantt Chart", "🔍 Data Explorer"])
+    tab1, tab2, tab3 = st.tabs(["📊 Data Overview", "📈 Summary Charts", "📅 Gantt Chart"])
     
     with tab1:
         st.header("Data Overview")
@@ -497,44 +511,8 @@ def main():
                             ]
                         })
                         st.dataframe(duration_stats, use_container_width=True, hide_index=True)
-            
-            # Owner timeBox analysis
-            if 'owner_timeBox_startTime_time' in filtered_df.columns:
-                st.subheader("Owner-Specific Time Analysis")
-                
-                col1, col2 = st.columns(2)
-                with col1:
-                    # Owner sequence distribution
-                    if 'ownerSequence' in filtered_df.columns:
-                        owner_dist = filtered_df.groupby('ownerSequence')['row_count'].sum().sort_index()
-                        st.write("**Distribution by Owner Sequence:**")
-                        owner_dist_df = owner_dist.to_frame('Total Records')
-                        owner_dist_df['Percentage'] = (owner_dist_df['Total Records'] / owner_dist_df['Total Records'].sum() * 100).round(1)
-                        st.dataframe(owner_dist_df, use_container_width=True)
-                
-                with col2:
-                    # Compare main vs owner time windows
-                    time_comparison = []
-                    for _, row in filtered_df.iterrows():
-                        if (pd.notna(row['timeBox_startTime_time']) and pd.notna(row['owner_timeBox_startTime_time']) and
-                            pd.notna(row['timeBox_endTime_time']) and pd.notna(row['owner_timeBox_endTime_time'])):
-                            main_start = time_to_decimal_hour(row['timeBox_startTime_time'])
-                            owner_start = time_to_decimal_hour(row['owner_timeBox_startTime_time'])
-                            if main_start is not None and owner_start is not None:
-                                time_comparison.append({
-                                    'Same Start Time': main_start == owner_start,
-                                    'Records': row['row_count']
-                                })
-                    
-                    if time_comparison:
-                        comp_df = pd.DataFrame(time_comparison)
-                        comp_summary = comp_df.groupby('Same Start Time')['Records'].sum()
-                        st.write("**Main vs Owner Time Window Comparison:**")
-                        comp_display = comp_summary.to_frame('Total Records')
-                        comp_display['Percentage'] = (comp_display['Total Records'] / comp_display['Total Records'].sum() * 100).round(1)
-                        st.dataframe(comp_display, use_container_width=True)
-        else:
-            st.warning("No data matches the selected filters.")
+            else:
+                st.warning("No data matches the selected filters.")
     
     with tab2:
         st.header("Summary Charts")
@@ -593,84 +571,6 @@ def main():
                             total_combinations = len(provider_site_customers)
                             st.metric("Provider|Site|Customer Combinations", f"{total_combinations:,}")
                         
-                        # Show busiest combinations
-                        st.subheader("Top 10 Busiest Provider|Site|Customer Combinations")
-                        provider_totals = intensity_matrix.sum(axis=1)
-                        top_indices = np.argsort(provider_totals)[-10:][::-1]
-                        
-                        top_combinations = []
-                        for idx in top_indices:
-                            if provider_totals[idx] > 0:
-                                top_combinations.append({
-                                    'Provider|Site|Customer': provider_site_customers[idx],
-                                    'Total Records': int(provider_totals[idx])
-                                })
-                        
-                        if top_combinations:
-                            top_combinations_df = pd.DataFrame(top_combinations)
-                            top_combinations_df['Total Records'] = top_combinations_df['Total Records'].apply(lambda x: "{:,}".format(x))
-                            st.dataframe(top_combinations_df, use_container_width=True, hide_index=True)
-                    else:
-                        st.error("Could not create Gantt chart")
-                else:
-                    st.warning("No time data available for Gantt chart visualization")
-        else:
-            st.warning("No data matches the selected filters.")
-    
-    with tab4:
-        st.header("Data Explorer")
-        
-        if len(filtered_df) > 0:
-            # Column selection for display
-            st.subheader("Select Columns to Display")
-            
-            # Default columns to show
-            default_cols = [
-                'collection_frequency', 'provider', 'site', 'customerCollection_customer',
-                'timeBox_startTime_time', 'timeBox_endTime_time', 'ownerSequence',
-                'owner_timeBox_startTime_time', 'owner_timeBox_endTime_time', 'row_count'
-            ]
-            
-            available_cols = filtered_df.columns.tolist()
-            selected_cols = st.multiselect(
-                "Choose columns:",
-                available_cols,
-                default=[col for col in default_cols if col in available_cols]
-            )
-            
-            if selected_cols:
-                # Display options
-                col1, col2 = st.columns(2)
-                with col1:
-                    show_rows = st.number_input("Number of rows to display", min_value=10, max_value=len(filtered_df), value=min(50, len(filtered_df)))
-                with col2:
-                    sort_by = st.selectbox("Sort by column", selected_cols, index=selected_cols.index('row_count') if 'row_count' in selected_cols else 0)
-                
-                # Sort and display data
-                display_df = filtered_df[selected_cols].sort_values(sort_by, ascending=False).head(int(show_rows))
-                
-                # Format time columns for better readability
-                for col in selected_cols:
-                    if 'time' in col.lower() and col.endswith('_time'):
-                        display_df[col] = display_df[col].apply(convert_time_to_hour_minute)
-                
-                # Format numeric columns with commas
-                for col in selected_cols:
-                    if pd.api.types.is_numeric_dtype(display_df[col]):
-                        display_df[col] = display_df[col].apply(lambda x: "{:,}".format(x) if pd.notna(x) else x)
-                
-                st.dataframe(display_df, use_container_width=True, hide_index=True)
-                
-                # Download option
-                csv = display_df.to_csv(index=False)
-                st.download_button(
-                    label="📥 Download filtered data as CSV",
-                    data=csv,
-                    file_name=f"filtered_autoscheduler_data_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime="text/csv"
-                )
-            else:
-                st.warning("Please select at least one column to display.")
         else:
             st.warning("No data matches the selected filters.")
     
