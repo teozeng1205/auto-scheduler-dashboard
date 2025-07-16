@@ -11,7 +11,6 @@ import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
 import warnings
-import os
 warnings.filterwarnings('ignore')
 
 # Page configuration
@@ -41,54 +40,33 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 @st.cache_data
-def load_data(data_source="JSON Pipeline"):
-    """Load and cache the grouped data from the selected source"""
-    if data_source == "JSON Pipeline":
+def load_data(data_source="json"):
+    """Load and cache the grouped data from either JSON or Parquet pipeline"""
+    if data_source == "json":
         file_path = 'combined_all_data_grouped.csv'
-        pipeline_info = {
-            'name': 'JSON Pipeline (v1/10)',
-            'source': 's3://s3-atp-3victors-3vdev-use1-pe-as-persistence/v1/10/',
-            'format': 'JSON.gz files → flattened → grouped',
-            'description': 'Historical data from compressed JSON files'
-        }
-    else:  # Parquet Pipeline
+        source_label = "JSON Pipeline"
+    else:  # parquet
         file_path = 'combined_all_parquet_data_grouped.csv'
-        pipeline_info = {
-            'name': 'Parquet Pipeline (parquet-69-temp)',
-            'source': 's3://s3-atp-3victors-3vdev-use1-pe-as-parquet-temp/parquet-69-temp/',
-            'format': 'Parquet files → combined → grouped',
-            'description': 'Recent data from optimized parquet files'
-        }
+        source_label = "Parquet Pipeline"
     
     try:
         df = pd.read_csv(file_path)
         
-        # Determine the row count column name
-        row_count_col = 'grouped_row_count' if 'grouped_row_count' in df.columns else 'row_count'
+        # Handle different row count column names
+        if 'grouped_row_count' in df.columns and 'row_count' in df.columns:
+            # For parquet data, use grouped_row_count as the main count
+            df['display_row_count'] = df['grouped_row_count']
+        elif 'row_count' in df.columns:
+            # For JSON data or if only row_count exists
+            df['display_row_count'] = df['row_count']
+        else:
+            st.error(f"❌ No row count column found in {file_path}")
+            st.stop()
         
-        # Add pipeline metadata to the dataframe as attributes
-        df.attrs['pipeline_info'] = pipeline_info
-        df.attrs['row_count_column'] = row_count_col
-        
-        return df
+        return df, source_label
     except FileNotFoundError:
-        st.error(f"❌ File '{file_path}' not found. Please ensure the data processing scripts have been run for the {data_source.lower()}.")
+        st.error(f"❌ File '{file_path}' not found. Please ensure the data processing scripts have been run for {source_label}.")
         st.stop()
-
-@st.cache_data
-def get_available_data_sources():
-    """Check which data sources are available"""
-    sources = []
-    
-    # Check JSON pipeline file
-    if os.path.exists('combined_all_data_grouped.csv'):
-        sources.append("JSON Pipeline")
-    
-    # Check Parquet pipeline file  
-    if os.path.exists('combined_all_parquet_data_grouped.csv'):
-        sources.append("Parquet Pipeline")
-    
-    return sources
 
 def convert_time_to_hour_minute(time_value):
     """Convert time values like 500, 1030, 2359 to hour:minute format"""
@@ -114,18 +92,16 @@ def time_to_decimal_hour(time_val):
     minutes = time_int % 100
     return hours + minutes / 60.0
 
-def create_gantt_chart_data(df, row_count_col='row_count'):
+def create_gantt_chart_data(df):
     """Create intensity matrix and labels for multi-day Gantt chart.
 
     Parameters
     ----------
     df : pd.DataFrame
         Filtered dataframe containing at least the following columns:
-        - provider, site, customerCollection_customer
-        - timeBox_startTime_date, timeBox_startTime_time, timeBox_endTime_time
-        - hourly_collection_plan_id, row_count (or grouped_row_count)
-    row_count_col : str
-        Name of the column containing row counts
+        - provider, site, Collection_customer
+        - timeBox_start_date, timeBox_start_time, timeBox_end_time
+        - hourly_collection_plan_id, row_count
 
     Returns
     -------
@@ -140,10 +116,11 @@ def create_gantt_chart_data(df, row_count_col='row_count'):
     """
 
     # Ensure required columns are present
+    customer_col = 'Collection_customer' if 'Collection_customer' in df.columns else 'customerCollection_customer'
     required_cols = {
-        'provider', 'site', 'customerCollection_customer',
-        'timeBox_startTime_date', 'timeBox_startTime_time', 'timeBox_endTime_time',
-        'hourly_collection_plan_id', row_count_col
+        'provider', 'site', customer_col,
+        'timeBox_start_date', 'timeBox_start_time', 'timeBox_end_time',
+        'hourly_collection_plan_id', 'display_row_count'
     }
     if not required_cols.issubset(set(df.columns)):
         return None, None, None, None
@@ -154,12 +131,12 @@ def create_gantt_chart_data(df, row_count_col='row_count'):
     df_filtered['provider_site_customer'] = (
         df_filtered['provider'].astype(str) + '|' +
         df_filtered['site'].fillna('N/A').astype(str) + '|' +
-        df_filtered['customerCollection_customer'].fillna('N/A').astype(str)
+        df_filtered[customer_col].fillna('N/A').astype(str)
     )
 
     # Helper conversion
-    df_filtered['start_decimal'] = df_filtered['timeBox_startTime_time'].apply(time_to_decimal_hour)
-    df_filtered['end_decimal'] = df_filtered['timeBox_endTime_time'].apply(time_to_decimal_hour)
+    df_filtered['start_decimal'] = df_filtered['timeBox_start_time'].apply(time_to_decimal_hour)
+    df_filtered['end_decimal'] = df_filtered['timeBox_end_time'].apply(time_to_decimal_hour)
 
     # If time conversion failed, drop those rows
     df_filtered = df_filtered[pd.notna(df_filtered['start_decimal']) & pd.notna(df_filtered['end_decimal'])]
@@ -172,7 +149,7 @@ def create_gantt_chart_data(df, row_count_col='row_count'):
     )
 
     # Unique dates sorted
-    dates = sorted(df_filtered['timeBox_startTime_date'].dropna().unique().tolist())
+    dates = sorted(df_filtered['timeBox_start_date'].dropna().unique().tolist())
     n_dates = len(dates)
     if n_dates == 0:
         return None, None, None, None
@@ -188,7 +165,7 @@ def create_gantt_chart_data(df, row_count_col='row_count'):
     # Populate matrix
     for _, row in df_filtered.iterrows():
         provider_idx = provider_site_customers.index(row['provider_site_customer'])
-        date_idx = date_to_idx.get(row['timeBox_startTime_date'])
+        date_idx = date_to_idx.get(row['timeBox_start_date'])
         if date_idx is None:
             continue
 
@@ -204,7 +181,7 @@ def create_gantt_chart_data(df, row_count_col='row_count'):
             if target_date_idx >= n_dates:
                 break  # Skip overflow beyond available dates
             col_idx = target_date_idx * 24 + hour_within_day
-            intensity_matrix[provider_idx, col_idx] += row[row_count_col]
+            intensity_matrix[provider_idx, col_idx] += row['display_row_count']
 
     # Build multi-category labels
     x_date_labels = []
@@ -263,60 +240,61 @@ def create_interactive_gantt_chart(intensity_matrix, provider_site_customers, x_
 
     return fig
 
-def create_summary_charts(df, row_count_col='row_count'):
+def create_summary_charts(df):
     """Create summary charts for data exploration"""
     
     charts = {}
     
     # 1. Collection Frequency Distribution
-    freq_data = df.groupby('collection_frequency')[row_count_col].sum().reset_index()
+    freq_data = df.groupby('collection_frequency')['display_row_count'].sum().reset_index()
     charts['frequency'] = px.pie(
         freq_data, 
-        values=row_count_col, 
+        values='display_row_count', 
         names='collection_frequency',
         title='Distribution by Collection Frequency',
         color_discrete_sequence=px.colors.qualitative.Set3
     )
     
     # 2. Top Providers
-    provider_data = df.groupby('site')[row_count_col].sum().sort_values(ascending=False).head(10).reset_index()
+    provider_data = df.groupby('site')['display_row_count'].sum().sort_values(ascending=False).head(10).reset_index()
     charts['providers'] = px.bar(
         provider_data,
-        x=row_count_col,
+        x='display_row_count',
         y='site',
         orientation='h',
         title='Top 10 Sites by Volume',
-        labels={row_count_col: 'Total Records', 'site': 'Site'},
-        color=row_count_col,
+        labels={'display_row_count': 'Total Records', 'site': 'Site'},
+        color='display_row_count',
         color_continuous_scale='Blues'
     )
     
     # 3. Hourly Distribution
-    if 'timeBox_startTime_time' in df.columns:
+    if 'timeBox_start_time' in df.columns:
         df_temp = df.copy()
-        df_temp['start_hour'] = df_temp['timeBox_startTime_time'].apply(lambda x: int(x) // 100 if pd.notna(x) else None)
-        hourly_data = df_temp.groupby('start_hour')[row_count_col].sum().reset_index()
+        df_temp['start_hour'] = df_temp['timeBox_start_time'].apply(lambda x: int(x) // 100 if pd.notna(x) else None)
+        hourly_data = df_temp.groupby('start_hour')['display_row_count'].sum().reset_index()
         
         charts['hourly'] = px.bar(
             hourly_data,
             x='start_hour',
-            y=row_count_col,
+            y='display_row_count',
             title='Scheduling Distribution by Hour of Day',
-            labels={'start_hour': 'Hour', row_count_col: 'Total Records'},
-            color=row_count_col,
+            labels={'start_hour': 'Hour', 'display_row_count': 'Total Records'},
+            color='display_row_count',
             color_continuous_scale='Viridis'
         )
         charts['hourly'].update_xaxes(tickmode='linear', tick0=0, dtick=2)
     
     # 4. Customer Distribution
-    customer_data = df.groupby('customerCollection_customer')[row_count_col].sum().sort_values(ascending=False).head(8).reset_index()
+    customer_col = 'Collection_customer' if 'Collection_customer' in df.columns else 'customerCollection_customer'
+    customer_data = df.groupby(customer_col)['display_row_count'].sum().sort_values(ascending=False).head(8).reset_index()
     charts['customers'] = px.bar(
         customer_data,
-        x='customerCollection_customer',
-        y=row_count_col,
+        x=customer_col,
+        y='display_row_count',
         title='Top Customers by Volume',
-        labels={'customerCollection_customer': 'Customer', row_count_col: 'Total Records'},
-        color=row_count_col,
+        labels={customer_col: 'Customer', 'display_row_count': 'Total Records'},
+        color='display_row_count',
         color_continuous_scale='Oranges'
     )
     charts['customers'].update_xaxes(tickangle=45)
@@ -331,47 +309,23 @@ def main():
     st.markdown("**Interactive Dashboard for Flight Data Collection Scheduling Analysis**")
     st.markdown("---")
     
-    # Data source selection
-    st.sidebar.header("🗂️ Data Source")
-    available_sources = get_available_data_sources()
-    
-    if not available_sources:
-        st.error("❌ No data sources available. Please run the data processing pipelines first.")
-        st.stop()
-    
-    # Default to Parquet pipeline if available, otherwise JSON
-    default_source = "Parquet Pipeline" if "Parquet Pipeline" in available_sources else available_sources[0]
-    
-    selected_data_source = st.sidebar.selectbox(
-        "Select Data Pipeline",
-        available_sources,
-        index=available_sources.index(default_source),
-        help="Choose between JSON pipeline (historical) or Parquet pipeline (recent) data"
+    # Sidebar - Data Source Selection
+    st.sidebar.header("🔄 Data Source")
+    data_source = st.sidebar.radio(
+        "Select Pipeline Data",
+        options=["json", "parquet"],
+        format_func=lambda x: "📊 JSON Pipeline (Historical)" if x == "json" else "🗂️ Parquet Pipeline (Recent)",
+        index=1,  # Default to parquet since it's newer
+        help="Choose between JSON pipeline (historical data from v1/10) or Parquet pipeline (recent data from parquet-69-temp)"
     )
     
-    # Load data based on selection
-    with st.spinner(f"Loading data from {selected_data_source}..."):
-        df = load_data(selected_data_source)
+    # Load data
+    with st.spinner("Loading data..."):
+        df, source_label = load_data(data_source)
     
-    # Display pipeline information
-    pipeline_info = df.attrs.get('pipeline_info', {})
-    row_count_col = df.attrs.get('row_count_column', 'row_count')
-    
-    with st.sidebar.expander("ℹ️ Pipeline Details", expanded=False):
-        st.markdown(f"**{pipeline_info.get('name', 'Unknown')}**")
-        st.markdown(f"**Source:** `{pipeline_info.get('source', 'Unknown')}`")
-        st.markdown(f"**Format:** {pipeline_info.get('format', 'Unknown')}")
-        st.markdown(f"**Description:** {pipeline_info.get('description', 'N/A')}")
-        
-        # Quick stats
-        total_patterns = len(df)
-        total_records = df[row_count_col].sum()
-        compression_ratio = total_records / total_patterns if total_patterns > 0 else 0
-        
-        st.markdown("**Quick Stats:**")
-        st.markdown(f"- Unique patterns: {total_patterns:,}")
-        st.markdown(f"- Total records: {total_records:,}")
-        st.markdown(f"- Compression: {compression_ratio:.1f}x")
+    # Display data source info
+    st.sidebar.success(f"✅ Loaded: {source_label}")
+    st.sidebar.caption(f"📁 Source: {'v1/10/' if data_source == 'json' else 'parquet-69-temp/'}")
     
     # Sidebar filters
     st.sidebar.header("📊 Data Filters")
@@ -401,7 +355,8 @@ def main():
     )
     
     # Customer filter
-    customers = ['All'] + sorted(df['customerCollection_customer'].unique().tolist())
+    customer_col = 'Collection_customer' if 'Collection_customer' in df.columns else 'customerCollection_customer'
+    customers = ['All'] + sorted(df[customer_col].unique().tolist())
     selected_customer = st.sidebar.selectbox(
         "Customer",
         customers,
@@ -409,8 +364,8 @@ def main():
     )
     
     # Collection Name filter
-    if 'customerCollection_name' in df.columns:
-        collection_names = ['All'] + sorted(df['customerCollection_name'].fillna('N/A').unique().tolist())
+    if 'Collection_name' in df.columns:
+        collection_names = ['All'] + sorted(df['Collection_name'].fillna('N/A').unique().tolist())
         selected_collection_name = st.sidebar.selectbox(
             "Collection Name",
             collection_names,
@@ -420,8 +375,8 @@ def main():
         selected_collection_name = 'All'
     
     # SiteHierarchy Priority filter
-    if 'siteHierarchy_priority' in df.columns:
-        priorities = ['All'] + sorted(df['siteHierarchy_priority'].fillna('N/A').unique().tolist())
+    if 'hierarchy_priority' in df.columns:
+        priorities = ['All'] + sorted(df['hierarchy_priority'].fillna('N/A').unique().tolist())
         selected_priority = st.sidebar.selectbox(
             "SiteHierarchy Priority",
             priorities,
@@ -431,8 +386,8 @@ def main():
         selected_priority = 'All'
     
     # Customer Site Code filter
-    if 'siteHierarchy_customerSiteCode' in df.columns:
-        customer_site_codes = ['All'] + sorted(df['siteHierarchy_customerSiteCode'].fillna('N/A').unique().tolist())
+    if 'hierarchy_customerSiteCode' in df.columns:
+        customer_site_codes = ['All'] + sorted(df['hierarchy_customerSiteCode'].fillna('N/A').unique().tolist())
         selected_customer_site_code = st.sidebar.selectbox(
             "Customer Site Code",
             customer_site_codes,
@@ -442,8 +397,8 @@ def main():
         selected_customer_site_code = 'All'
     
     # Date filter
-    if 'timeBox_startTime_date' in df.columns:
-        dates = ['All'] + sorted(df['timeBox_startTime_date'].unique().tolist())
+    if 'timeBox_start_date' in df.columns:
+        dates = ['All'] + sorted(df['timeBox_start_date'].unique().tolist())
         selected_date = st.sidebar.selectbox(
             "Date",
             dates,
@@ -465,19 +420,19 @@ def main():
         filtered_df = filtered_df[filtered_df['site'] == selected_site]
     
     if selected_customer != 'All':
-        filtered_df = filtered_df[filtered_df['customerCollection_customer'] == selected_customer]
+        filtered_df = filtered_df[filtered_df[customer_col] == selected_customer]
     
-    if selected_collection_name != 'All' and 'customerCollection_name' in filtered_df.columns:
-        filtered_df = filtered_df[filtered_df['customerCollection_name'].fillna('N/A') == selected_collection_name]
+    if selected_collection_name != 'All' and 'Collection_name' in filtered_df.columns:
+        filtered_df = filtered_df[filtered_df['Collection_name'].fillna('N/A') == selected_collection_name]
     
-    if selected_priority != 'All' and 'siteHierarchy_priority' in filtered_df.columns:
-        filtered_df = filtered_df[filtered_df['siteHierarchy_priority'].fillna('N/A') == selected_priority]
+    if selected_priority != 'All' and 'hierarchy_priority' in filtered_df.columns:
+        filtered_df = filtered_df[filtered_df['hierarchy_priority'].fillna('N/A') == selected_priority]
     
-    if selected_customer_site_code != 'All' and 'siteHierarchy_customerSiteCode' in filtered_df.columns:
-        filtered_df = filtered_df[filtered_df['siteHierarchy_customerSiteCode'].fillna('N/A') == selected_customer_site_code]
+    if selected_customer_site_code != 'All' and 'hierarchy_customerSiteCode' in filtered_df.columns:
+        filtered_df = filtered_df[filtered_df['hierarchy_customerSiteCode'].fillna('N/A') == selected_customer_site_code]
     
     if selected_date != 'All':
-        filtered_df = filtered_df[filtered_df['timeBox_startTime_date'] == selected_date]
+        filtered_df = filtered_df[filtered_df['timeBox_start_date'] == selected_date]
     
     # Display summary metrics
     col1, col2, col3, col4, col5 = st.columns(5)
@@ -490,11 +445,11 @@ def main():
         )
     
     with col2:
-        total_records = filtered_df[row_count_col].sum()
+        total_records = filtered_df['display_row_count'].sum()
         st.metric(
             "Total Records",
             "{:,}".format(total_records),
-            delta=f"{(total_records/df[row_count_col].sum()*100-100):.1f}%" if len(df) > 0 else "0%"
+            delta=f"{(total_records/df['display_row_count'].sum()*100-100):.1f}%" if len(df) > 0 else "0%"
         )
     
     with col3:
@@ -512,7 +467,8 @@ def main():
         )
     
     with col5:
-        unique_customers = filtered_df['customerCollection_customer'].nunique()
+        customer_col = 'Collection_customer' if 'Collection_customer' in filtered_df.columns else 'customerCollection_customer'
+        unique_customers = filtered_df[customer_col].nunique()
         st.metric(
             "Unique Customers",
             "{:,}".format(unique_customers)
@@ -533,7 +489,7 @@ def main():
             with col1:
                 st.subheader("Collection Frequency Breakdown")
                 freq_summary = filtered_df.groupby('collection_frequency').agg({
-                    row_count_col: ['sum', 'count', 'mean']
+                    'display_row_count': ['sum', 'count', 'mean']
                 }).round(1)
                 freq_summary.columns = ['Total Records', 'Configurations', 'Avg Records/Config']
                 # Format numbers with commas
@@ -543,21 +499,21 @@ def main():
             
             with col2:
                 st.subheader("Top Sites")
-                provider_summary = filtered_df.groupby('site')[row_count_col].sum().sort_values(ascending=False).head(5)
+                provider_summary = filtered_df.groupby('site')['display_row_count'].sum().sort_values(ascending=False).head(5)
                 # Format numbers with commas
                 provider_summary = provider_summary.apply(lambda x: "{:,}".format(x))
                 st.dataframe(provider_summary.to_frame('Total Records'), use_container_width=True)
             
             # Time analysis if available
-            if 'timeBox_startTime_time' in filtered_df.columns:
+            if 'timeBox_start_time' in filtered_df.columns:
                 st.subheader("Time Distribution")
                 
                 # Convert times to readable format
                 filtered_df_temp = filtered_df.copy()
-                filtered_df_temp['start_time_formatted'] = filtered_df_temp['timeBox_startTime_time'].apply(convert_time_to_hour_minute)
-                filtered_df_temp['end_time_formatted'] = filtered_df_temp['timeBox_endTime_time'].apply(convert_time_to_hour_minute)
+                filtered_df_temp['start_time_formatted'] = filtered_df_temp['timeBox_start_time'].apply(convert_time_to_hour_minute)
+                filtered_df_temp['end_time_formatted'] = filtered_df_temp['timeBox_end_time'].apply(convert_time_to_hour_minute)
                 
-                time_summary = filtered_df_temp.groupby('start_time_formatted')[row_count_col].sum().sort_values(ascending=False).head(10)
+                time_summary = filtered_df_temp.groupby('start_time_formatted')['display_row_count'].sum().sort_values(ascending=False).head(10)
                 
                 # Format the time summary with thousand separators
                 time_summary = time_summary.apply(lambda x: "{:,}".format(x))
@@ -571,9 +527,9 @@ def main():
                     # Calculate duration statistics
                     durations = []
                     for _, row in filtered_df_temp.iterrows():
-                        if pd.notna(row['timeBox_startTime_time']) and pd.notna(row['timeBox_endTime_time']):
-                            start_decimal = time_to_decimal_hour(row['timeBox_startTime_time'])
-                            end_decimal = time_to_decimal_hour(row['timeBox_endTime_time'])
+                        if pd.notna(row['timeBox_start_time']) and pd.notna(row['timeBox_end_time']):
+                            start_decimal = time_to_decimal_hour(row['timeBox_start_time'])
+                            end_decimal = time_to_decimal_hour(row['timeBox_end_time'])
                             if start_decimal is not None and end_decimal is not None:
                                 duration = end_decimal - start_decimal
                                 if duration < 0:
@@ -600,7 +556,7 @@ def main():
         
         if len(filtered_df) > 0:
             # Create and display summary charts
-            charts = create_summary_charts(filtered_df, row_count_col)
+            charts = create_summary_charts(filtered_df)
             
             # Display charts in a 2x2 grid
             col1, col2 = st.columns(2)
@@ -624,7 +580,7 @@ def main():
             gantt_date = None
 
             with st.spinner("Creating Gantt chart..."):
-                intensity_matrix, provider_site_customers, x_date_labels, x_hour_labels = create_gantt_chart_data(filtered_df, row_count_col)
+                intensity_matrix, provider_site_customers, x_date_labels, x_hour_labels = create_gantt_chart_data(filtered_df)
                 
                 if intensity_matrix is not None:
                     # Create and display the interactive Gantt chart

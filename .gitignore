@@ -13,14 +13,6 @@ env/
 *.csv
 *.json.gz
 *.json
-*.parquet
-
-# Downloaded data directories
-s3_repo/
-s3_parquet_repo/
-
-# Analysis outputs
-parquet_analysis.json
 
 # OS-specific
 .DS_Store
