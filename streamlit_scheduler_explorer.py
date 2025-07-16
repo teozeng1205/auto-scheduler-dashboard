@@ -11,6 +11,7 @@ import plotly.graph_objects as go
 import plotly.express as px
 from plotly.subplots import make_subplots
 import warnings
+import os
 warnings.filterwarnings('ignore')
 
 # Page configuration
@@ -40,40 +41,54 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 @st.cache_data
-def load_data():
-    """Load and cache the grouped data"""
-    try:
-        df = pd.read_csv('combined_all_data_grouped.csv')
-        
-        # Handle different column naming conventions between JSON and Parquet pipelines
-        column_mappings = {
-            'timeBox_start_time': 'timeBox_startTime_time',
-            'timeBox_end_time': 'timeBox_endTime_time', 
-            'timeBox_start_date': 'timeBox_startTime_date',
-            'timeBox_end_date': 'timeBox_endTime_date',
-            'Collection_customer': 'customerCollection_customer',
-            'Collection_name': 'customerCollection_name',
-            'Collection_id': 'customerCollection_id',
-            'Collection_status': 'customerCollection_status',
-            'Collection_hints': 'customerCollection_hints',
-            'Collection_earliestStartTime': 'customerCollection_earliestStartTime',
-            'Collection_expectedDeliveryTime': 'customerCollection_expectedDeliveryTime',
-            'Collection_customerPackagingId': 'customerCollection_customerPackagingId',
-            'hierarchy_customer': 'siteHierarchy_customer',
-            'hierarchy_customerSiteCode': 'siteHierarchy_customerSiteCode',
-            'hierarchy_priority': 'siteHierarchy_priority',
-            'grouped_row_count': 'row_count'  # Use consistent row_count column
+def load_data(data_source="JSON Pipeline"):
+    """Load and cache the grouped data from the selected source"""
+    if data_source == "JSON Pipeline":
+        file_path = 'combined_all_data_grouped.csv'
+        pipeline_info = {
+            'name': 'JSON Pipeline (v1/10)',
+            'source': 's3://s3-atp-3victors-3vdev-use1-pe-as-persistence/v1/10/',
+            'format': 'JSON.gz files → flattened → grouped',
+            'description': 'Historical data from compressed JSON files'
         }
+    else:  # Parquet Pipeline
+        file_path = 'combined_all_parquet_data_grouped.csv'
+        pipeline_info = {
+            'name': 'Parquet Pipeline (parquet-69-temp)',
+            'source': 's3://s3-atp-3victors-3vdev-use1-pe-as-parquet-temp/parquet-69-temp/',
+            'format': 'Parquet files → combined → grouped',
+            'description': 'Recent data from optimized parquet files'
+        }
+    
+    try:
+        df = pd.read_csv(file_path)
         
-        # Rename columns if they exist
-        for old_col, new_col in column_mappings.items():
-            if old_col in df.columns and new_col not in df.columns:
-                df = df.rename(columns={old_col: new_col})
+        # Determine the row count column name
+        row_count_col = 'grouped_row_count' if 'grouped_row_count' in df.columns else 'row_count'
+        
+        # Add pipeline metadata to the dataframe as attributes
+        df.attrs['pipeline_info'] = pipeline_info
+        df.attrs['row_count_column'] = row_count_col
         
         return df
     except FileNotFoundError:
-        st.error("❌ File 'combined_all_data_grouped.csv' not found. Please ensure the data processing scripts have been run.")
+        st.error(f"❌ File '{file_path}' not found. Please ensure the data processing scripts have been run for the {data_source.lower()}.")
         st.stop()
+
+@st.cache_data
+def get_available_data_sources():
+    """Check which data sources are available"""
+    sources = []
+    
+    # Check JSON pipeline file
+    if os.path.exists('combined_all_data_grouped.csv'):
+        sources.append("JSON Pipeline")
+    
+    # Check Parquet pipeline file  
+    if os.path.exists('combined_all_parquet_data_grouped.csv'):
+        sources.append("Parquet Pipeline")
+    
+    return sources
 
 def convert_time_to_hour_minute(time_value):
     """Convert time values like 500, 1030, 2359 to hour:minute format"""
@@ -99,7 +114,7 @@ def time_to_decimal_hour(time_val):
     minutes = time_int % 100
     return hours + minutes / 60.0
 
-def create_gantt_chart_data(df):
+def create_gantt_chart_data(df, row_count_col='row_count'):
     """Create intensity matrix and labels for multi-day Gantt chart.
 
     Parameters
@@ -108,7 +123,9 @@ def create_gantt_chart_data(df):
         Filtered dataframe containing at least the following columns:
         - provider, site, customerCollection_customer
         - timeBox_startTime_date, timeBox_startTime_time, timeBox_endTime_time
-        - hourly_collection_plan_id, row_count
+        - hourly_collection_plan_id, row_count (or grouped_row_count)
+    row_count_col : str
+        Name of the column containing row counts
 
     Returns
     -------
@@ -126,7 +143,7 @@ def create_gantt_chart_data(df):
     required_cols = {
         'provider', 'site', 'customerCollection_customer',
         'timeBox_startTime_date', 'timeBox_startTime_time', 'timeBox_endTime_time',
-        'hourly_collection_plan_id', 'row_count'
+        'hourly_collection_plan_id', row_count_col
     }
     if not required_cols.issubset(set(df.columns)):
         return None, None, None, None
@@ -187,7 +204,7 @@ def create_gantt_chart_data(df):
             if target_date_idx >= n_dates:
                 break  # Skip overflow beyond available dates
             col_idx = target_date_idx * 24 + hour_within_day
-            intensity_matrix[provider_idx, col_idx] += row['row_count']
+            intensity_matrix[provider_idx, col_idx] += row[row_count_col]
 
     # Build multi-category labels
     x_date_labels = []
@@ -246,31 +263,31 @@ def create_interactive_gantt_chart(intensity_matrix, provider_site_customers, x_
 
     return fig
 
-def create_summary_charts(df):
+def create_summary_charts(df, row_count_col='row_count'):
     """Create summary charts for data exploration"""
     
     charts = {}
     
     # 1. Collection Frequency Distribution
-    freq_data = df.groupby('collection_frequency')['row_count'].sum().reset_index()
+    freq_data = df.groupby('collection_frequency')[row_count_col].sum().reset_index()
     charts['frequency'] = px.pie(
         freq_data, 
-        values='row_count', 
+        values=row_count_col, 
         names='collection_frequency',
         title='Distribution by Collection Frequency',
         color_discrete_sequence=px.colors.qualitative.Set3
     )
     
     # 2. Top Providers
-    provider_data = df.groupby('site')['row_count'].sum().sort_values(ascending=False).head(10).reset_index()
+    provider_data = df.groupby('site')[row_count_col].sum().sort_values(ascending=False).head(10).reset_index()
     charts['providers'] = px.bar(
         provider_data,
-        x='row_count',
+        x=row_count_col,
         y='site',
         orientation='h',
         title='Top 10 Sites by Volume',
-        labels={'row_count': 'Total Records', 'site': 'Site'},
-        color='row_count',
+        labels={row_count_col: 'Total Records', 'site': 'Site'},
+        color=row_count_col,
         color_continuous_scale='Blues'
     )
     
@@ -278,28 +295,28 @@ def create_summary_charts(df):
     if 'timeBox_startTime_time' in df.columns:
         df_temp = df.copy()
         df_temp['start_hour'] = df_temp['timeBox_startTime_time'].apply(lambda x: int(x) // 100 if pd.notna(x) else None)
-        hourly_data = df_temp.groupby('start_hour')['row_count'].sum().reset_index()
+        hourly_data = df_temp.groupby('start_hour')[row_count_col].sum().reset_index()
         
         charts['hourly'] = px.bar(
             hourly_data,
             x='start_hour',
-            y='row_count',
+            y=row_count_col,
             title='Scheduling Distribution by Hour of Day',
-            labels={'start_hour': 'Hour', 'row_count': 'Total Records'},
-            color='row_count',
+            labels={'start_hour': 'Hour', row_count_col: 'Total Records'},
+            color=row_count_col,
             color_continuous_scale='Viridis'
         )
         charts['hourly'].update_xaxes(tickmode='linear', tick0=0, dtick=2)
     
     # 4. Customer Distribution
-    customer_data = df.groupby('customerCollection_customer')['row_count'].sum().sort_values(ascending=False).head(8).reset_index()
+    customer_data = df.groupby('customerCollection_customer')[row_count_col].sum().sort_values(ascending=False).head(8).reset_index()
     charts['customers'] = px.bar(
         customer_data,
         x='customerCollection_customer',
-        y='row_count',
+        y=row_count_col,
         title='Top Customers by Volume',
-        labels={'customerCollection_customer': 'Customer', 'row_count': 'Total Records'},
-        color='row_count',
+        labels={'customerCollection_customer': 'Customer', row_count_col: 'Total Records'},
+        color=row_count_col,
         color_continuous_scale='Oranges'
     )
     charts['customers'].update_xaxes(tickangle=45)
@@ -314,9 +331,47 @@ def main():
     st.markdown("**Interactive Dashboard for Flight Data Collection Scheduling Analysis**")
     st.markdown("---")
     
-    # Load data
-    with st.spinner("Loading data..."):
-        df = load_data()
+    # Data source selection
+    st.sidebar.header("🗂️ Data Source")
+    available_sources = get_available_data_sources()
+    
+    if not available_sources:
+        st.error("❌ No data sources available. Please run the data processing pipelines first.")
+        st.stop()
+    
+    # Default to Parquet pipeline if available, otherwise JSON
+    default_source = "Parquet Pipeline" if "Parquet Pipeline" in available_sources else available_sources[0]
+    
+    selected_data_source = st.sidebar.selectbox(
+        "Select Data Pipeline",
+        available_sources,
+        index=available_sources.index(default_source),
+        help="Choose between JSON pipeline (historical) or Parquet pipeline (recent) data"
+    )
+    
+    # Load data based on selection
+    with st.spinner(f"Loading data from {selected_data_source}..."):
+        df = load_data(selected_data_source)
+    
+    # Display pipeline information
+    pipeline_info = df.attrs.get('pipeline_info', {})
+    row_count_col = df.attrs.get('row_count_column', 'row_count')
+    
+    with st.sidebar.expander("ℹ️ Pipeline Details", expanded=False):
+        st.markdown(f"**{pipeline_info.get('name', 'Unknown')}**")
+        st.markdown(f"**Source:** `{pipeline_info.get('source', 'Unknown')}`")
+        st.markdown(f"**Format:** {pipeline_info.get('format', 'Unknown')}")
+        st.markdown(f"**Description:** {pipeline_info.get('description', 'N/A')}")
+        
+        # Quick stats
+        total_patterns = len(df)
+        total_records = df[row_count_col].sum()
+        compression_ratio = total_records / total_patterns if total_patterns > 0 else 0
+        
+        st.markdown("**Quick Stats:**")
+        st.markdown(f"- Unique patterns: {total_patterns:,}")
+        st.markdown(f"- Total records: {total_records:,}")
+        st.markdown(f"- Compression: {compression_ratio:.1f}x")
     
     # Sidebar filters
     st.sidebar.header("📊 Data Filters")
@@ -435,11 +490,11 @@ def main():
         )
     
     with col2:
-        total_records = filtered_df['row_count'].sum()
+        total_records = filtered_df[row_count_col].sum()
         st.metric(
             "Total Records",
             "{:,}".format(total_records),
-            delta=f"{(total_records/df['row_count'].sum()*100-100):.1f}%" if len(df) > 0 else "0%"
+            delta=f"{(total_records/df[row_count_col].sum()*100-100):.1f}%" if len(df) > 0 else "0%"
         )
     
     with col3:
@@ -478,7 +533,7 @@ def main():
             with col1:
                 st.subheader("Collection Frequency Breakdown")
                 freq_summary = filtered_df.groupby('collection_frequency').agg({
-                    'row_count': ['sum', 'count', 'mean']
+                    row_count_col: ['sum', 'count', 'mean']
                 }).round(1)
                 freq_summary.columns = ['Total Records', 'Configurations', 'Avg Records/Config']
                 # Format numbers with commas
@@ -488,7 +543,7 @@ def main():
             
             with col2:
                 st.subheader("Top Sites")
-                provider_summary = filtered_df.groupby('site')['row_count'].sum().sort_values(ascending=False).head(5)
+                provider_summary = filtered_df.groupby('site')[row_count_col].sum().sort_values(ascending=False).head(5)
                 # Format numbers with commas
                 provider_summary = provider_summary.apply(lambda x: "{:,}".format(x))
                 st.dataframe(provider_summary.to_frame('Total Records'), use_container_width=True)
@@ -502,7 +557,7 @@ def main():
                 filtered_df_temp['start_time_formatted'] = filtered_df_temp['timeBox_startTime_time'].apply(convert_time_to_hour_minute)
                 filtered_df_temp['end_time_formatted'] = filtered_df_temp['timeBox_endTime_time'].apply(convert_time_to_hour_minute)
                 
-                time_summary = filtered_df_temp.groupby('start_time_formatted')['row_count'].sum().sort_values(ascending=False).head(10)
+                time_summary = filtered_df_temp.groupby('start_time_formatted')[row_count_col].sum().sort_values(ascending=False).head(10)
                 
                 # Format the time summary with thousand separators
                 time_summary = time_summary.apply(lambda x: "{:,}".format(x))
@@ -545,7 +600,7 @@ def main():
         
         if len(filtered_df) > 0:
             # Create and display summary charts
-            charts = create_summary_charts(filtered_df)
+            charts = create_summary_charts(filtered_df, row_count_col)
             
             # Display charts in a 2x2 grid
             col1, col2 = st.columns(2)
@@ -569,7 +624,7 @@ def main():
             gantt_date = None
 
             with st.spinner("Creating Gantt chart..."):
-                intensity_matrix, provider_site_customers, x_date_labels, x_hour_labels = create_gantt_chart_data(filtered_df)
+                intensity_matrix, provider_site_customers, x_date_labels, x_hour_labels = create_gantt_chart_data(filtered_df, row_count_col)
                 
                 if intensity_matrix is not None:
                     # Create and display the interactive Gantt chart
