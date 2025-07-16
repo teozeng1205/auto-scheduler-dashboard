@@ -44,6 +44,32 @@ def load_data():
     """Load and cache the grouped data"""
     try:
         df = pd.read_csv('combined_all_data_grouped.csv')
+        
+        # Handle different column naming conventions between JSON and Parquet pipelines
+        column_mappings = {
+            'timeBox_start_time': 'timeBox_startTime_time',
+            'timeBox_end_time': 'timeBox_endTime_time', 
+            'timeBox_start_date': 'timeBox_startTime_date',
+            'timeBox_end_date': 'timeBox_endTime_date',
+            'Collection_customer': 'customerCollection_customer',
+            'Collection_name': 'customerCollection_name',
+            'Collection_id': 'customerCollection_id',
+            'Collection_status': 'customerCollection_status',
+            'Collection_hints': 'customerCollection_hints',
+            'Collection_earliestStartTime': 'customerCollection_earliestStartTime',
+            'Collection_expectedDeliveryTime': 'customerCollection_expectedDeliveryTime',
+            'Collection_customerPackagingId': 'customerCollection_customerPackagingId',
+            'hierarchy_customer': 'siteHierarchy_customer',
+            'hierarchy_customerSiteCode': 'siteHierarchy_customerSiteCode',
+            'hierarchy_priority': 'siteHierarchy_priority',
+            'grouped_row_count': 'row_count'  # Use consistent row_count column
+        }
+        
+        # Rename columns if they exist
+        for old_col, new_col in column_mappings.items():
+            if old_col in df.columns and new_col not in df.columns:
+                df = df.rename(columns={old_col: new_col})
+        
         return df
     except FileNotFoundError:
         st.error("❌ File 'combined_all_data_grouped.csv' not found. Please ensure the data processing scripts have been run.")

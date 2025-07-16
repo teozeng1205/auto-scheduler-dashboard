@@ -13,6 +13,11 @@ env/
 *.csv
 *.json.gz
 *.json
+*.parquet
+
+# Data directories
+s3_repo/
+s3_parquet_repo/
 
 # OS-specific
 .DS_Store
